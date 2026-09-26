@@ -1,0 +1,17 @@
+{
+  "editor.formatOnSave": true,
+  "files.associations": {
+    "*.httpql": "http"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  },
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": "\\.http$",
+        "cmd": "python \"${workspaceFolder}/.vscode/format-http.py\" \"${file}\""
+      }
+    ]
+  }
+}

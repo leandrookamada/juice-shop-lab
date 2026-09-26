@@ -1,0 +1,149 @@
+========================================================================
+ VULNERABILIDADES / SUPERFICIE DE ATAQUE - OWASP Juice Shop (main.js)
+ Analise estatica do bundle frontend. Alvo: laboratorio proposital.
+ Data: 2026-09-06
+========================================================================
+
+NOTA: main.js e SO o front. As falhas reais estao no backend, mas o
+bundle entrega o mapa: endpoints, sinks de XSS, storage do token, rotas.
+Cada item abaixo tem: [evidencia no bundle] + [como explorar].
+
+------------------------------------------------------------------------
+[1] XSS BASEADO EM DOM (ALTO)
+------------------------------------------------------------------------
+Evidencia: this.sanitizer.bypassSecurityTrustHtml(...) usado em:
+  - e.image / e (resultado de busca de produto)
+  - i.comment (comentario de feedback)
+  - e (descricao de produto)
+  Tambem 26x uso de innerHTML.
+Impacto: Angular normalmente escapa HTML; bypassSecurityTrustHtml DESLIGA
+  a sanitizacao -> HTML/JS controlado pelo atacante e renderizado.
+Exploracao:
+  - Busca de produto: /#/search?q=<iframe src="javascript:alert(1)">
+    (o termo de busca e refletido via bypassSecurityTrustHtml).
+  - Feedback/comment: salvar <script>/onerror -> XSS armazenado.
+Ganho: como o token JWT fica em localStorage (sem HttpOnly), o XSS
+  rouba a sessao -> account takeover. Ver item [2].
+
+------------------------------------------------------------------------
+[2] TOKEN JWT EXPOSTO NO CLIENT (ALTO)
+------------------------------------------------------------------------
+Evidencia: token gravado em localStorage E cookie (sem HttpOnly/Secure).
+  124 ref a "token"; cookieWriterService.write(); localStorage token.
+Impacto: qualquer XSS le localStorage.getItem('token').
+JWT em si:
+  - Decodificar (jwt.io): revela email + role (customer/admin/accounting).
+  - Testar forja: alg "none", ou chave publica fraca/hardcoded (RS256->HS256
+    confusion). Trocar role p/ admin.
+  - totp_tmp_token em sessionStorage -> tentar pular etapa 2FA.
+
+------------------------------------------------------------------------
+[3] SQL INJECTION (CRITICO)
+------------------------------------------------------------------------
+Evidencia: rest/products/search (parametro de busca) e rest/user/login.
+Exploracao:
+  - Login: email = ' OR 1=1--   senha = qualquer  -> loga como 1o user (admin).
+    email = admin@juice-sh.op'--  -> loga como admin sem senha.
+  - Busca: /rest/products/search?q=))--  -> erro SQL -> UNION SELECT p/
+    dumpar tabela Users (email, password[hash md5], role).
+
+------------------------------------------------------------------------
+[4] IDOR / BROKEN ACCESS CONTROL (ALTO)
+------------------------------------------------------------------------
+Evidencia: rest/basket/<id>, api/BasketItems, api/Cards, api/Addresss,
+  api/Feedbacks, bid no localStorage. Roles checados SO no client
+  ('admin','accounting','deluxe','customer'); guards Angular = cosmeticos.
+Exploracao:
+  - Trocar o id em /rest/basket/1 -> ver cesta de outro usuario.
+  - Chamar /rest/admin ou #/administration com token de customer:
+    o front esconde, o back precisa validar (testar direto).
+  - api/Quantitys (PUT) com user comum -> alterar estoque.
+  - Ver/baixar pedidos de outros via rest/order-history, ftp/order_*.
+
+------------------------------------------------------------------------
+[5] MASS ASSIGNMENT / REGISTRO PRIVILEGIADO (ALTO)
+------------------------------------------------------------------------
+Evidencia: api/Users (POST) + campo role no modelo.
+Exploracao: no registro, POST /api/Users com body extra:
+  {"email":"x@x","password":"x","role":"admin"} -> cria conta admin.
+
+------------------------------------------------------------------------
+[6] BROKEN AUTHENTICATION (ALTO)
+------------------------------------------------------------------------
+Evidencia: rest/user/change-password, rest/user/reset-password,
+  rest/user/security-question.
+Exploracao:
+  - change-password: GET /rest/user/change-password?new=x&repeat=x
+    SEM enviar senha atual -> troca senha (tambem CSRF).
+  - reset-password: pega pergunta em rest/user/security-question?email=,
+    responde via api/SecurityAnswers (respostas fracas/adivinhaveis).
+
+------------------------------------------------------------------------
+[7] OPEN REDIRECT (MEDIO)
+------------------------------------------------------------------------
+Evidencia: redirect?to=http / redirect?to=https no bundle; allowlist de
+  URLs (github, blockchain, etc - ver arquivo 4).
+Exploracao: validacao "URL contem string permitida":
+  /redirect?to=https://evil.tld/?pwned=https://github.com/juice-shop/juice-shop
+
+------------------------------------------------------------------------
+[8] OAUTH - SENHA DERIVAVEL (MEDIO)
+------------------------------------------------------------------------
+Evidencia: client_id Google + userinfo?access_token= hardcoded (arquivo 4).
+Exploracao: conta criada via Google tem senha = base64(email invertido).
+  Permite login classico numa conta OAuth alheia se o email for conhecido.
+
+------------------------------------------------------------------------
+[9] NoSQL INJECTION (MEDIO/ALTO)
+------------------------------------------------------------------------
+Evidencia: rest/track-order (MongoDB por tras), rest/chat.
+Exploracao: track-order/<id> aceita operadores; injetar {"$ne":null} ou
+  payload no id -> vazar todos os pedidos. Chatbot -> template injection.
+
+------------------------------------------------------------------------
+[10] UPLOAD / XXE / PATH TRAVERSAL (MEDIO)
+------------------------------------------------------------------------
+Evidencia: api/Complaints (upload), rest/memories (photo wall),
+  caminhos ftp/order_*, assets/public/images/uploads/.
+Exploracao:
+  - Upload XML no complaint -> XXE (ler /etc/passwd).
+  - Path traversal no FTP: /ftp/package.json.bak%2500.md (poison null byte),
+    /ftp/coupons_2013.md.bak p/ vazar arquivos.
+  - Upload > tipo/tamanho permitido (bypass de validacao client-side).
+
+------------------------------------------------------------------------
+[11] HEADER INJECTION (BAIXO/MEDIO)
+------------------------------------------------------------------------
+Evidencia: rest/saveLoginIp.
+Exploracao: enviar header True-Client-IP / X-Forwarded-For com XSS ->
+  refletido no historico de login (stored XSS via header).
+
+------------------------------------------------------------------------
+[12] LOGICA DE PRECO NO CLIENT (BAIXO)
+------------------------------------------------------------------------
+Evidencia: itemTotal, bid, quantity manipulados no client (localStorage).
+Exploracao: alterar quantidade p/ negativo/enorme no carrinho, cupons.
+  Cupom: logica de couponControl no client; forca-bruta de codigo de cupom
+  (formato conhecido: mes+ano codificado do Juice Shop).
+
+------------------------------------------------------------------------
+ RESUMO POR PRIORIDADE
+------------------------------------------------------------------------
+ CRITICO : [3] SQLi login/busca
+ ALTO    : [1] XSS DOM, [2] JWT no client, [4] IDOR, [5] Mass assignment,
+           [6] Broken auth
+ MEDIO   : [7] Open redirect, [8] OAuth senha, [9] NoSQLi, [10] Upload/XXE
+ BAIXO   : [11] Header injection, [12] Preco/cupom client-side
+
+------------------------------------------------------------------------
+ PROXIMO PASSO (dinamico, fora do main.js)
+------------------------------------------------------------------------
+ 1. Subir Juice Shop local, abrir Burp.
+ 2. Achar #/score-board (lista os desafios oficiais).
+ 3. Confirmar cada item acima via request real (o bundle so deu o mapa).
+ 4. Arquivos irmaos ja no diretorio ajudam:
+    - users.yml        -> possiveis usuarios/seed
+    - scripts,js.http  -> colecao de requests (REST client)
+    - rockyou.txt      -> wordlist p/ brute force
+    - check_hashes.py / estudo_quebra_hashes.py -> quebra de hash (MD5 dos users)
+========================================================================

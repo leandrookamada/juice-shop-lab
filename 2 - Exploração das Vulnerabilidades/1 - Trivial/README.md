@@ -50,6 +50,10 @@ Desafios do OWASP Juice Shop neste nível: 13
 
 **Categoria:** XSS
 
+>
+
 ## DOM XSS
 
 **Categoria:** XSS
+
+> Para explorar essa vulnerabilidade passei a tag <iframe src="javascript:alert(`xss`)"> na área de pesquisa. O que aconteceu foi que: a aplicação execultou o que foi passado na tela, sem sanitização. O que é passado alí é pesquisado por uma função, essa função retorna/"cria" um elemento HTML em formato de uma tag <p>, porém, o que eu passei é outra tag HTML, ent quando esse elemento for criado, dentro da tag <p>, vai ser impresso o que eu passei.
